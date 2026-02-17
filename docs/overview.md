@@ -159,56 +159,117 @@ result = schema.load(update_data, partial=True)
 
 Самодокументирование API: Грамотность подразумевает предвидение. Используя Marshmallow для описания ответов (responses) API, инженер автоматически создает живую документацию. Схемы Marshmallow часто служат основой для генерации OpenAPI (Swagger) спецификаций (через apispec или flask-smorest). Это делает структуру API прозрачной для фронтенд-разработчиков и систем автоматизации.
 
-Таким образом, владение Marshmallow — это маркер инженера, который думает о данных как о формальном контракте, а не как о «каше из словарей».
 ---
 
 ## 4. Применение в реальных проектах
 
-Пример 1: Валидация входящих запросов в REST API (Микросервис заказов) Задача: В микросервис интернет-магазина приходит POST-запрос на создание заказа. Нужно убедиться, что пользователь прислал корректные данные, прежде чем сохранять их в базу. Решение:
+### Пример 1: Валидация входящих запросов в REST API (Микросервис заказов)
 
-python from marshmallow import Schema, fields, validate, ValidationError
+**Задача:** В микросервис интернет-магазина приходит POST-запрос на создание заказа. Нужно убедиться, что пользователь прислал корректные данные, прежде чем сохранять их в базу.
 
-Схема, описывающая ожидаемый запрос
-class OrderSchema(Schema): user_id = fields.Integer(required=True, validate=validate.Range(min=1)) items = fields.List(fields.Nested(lambda: ItemSchema()), required=True) promo_code = fields.Str(allow_none=True, validate=validate.Length(min=3, max=10)) address = fields.Str(required=True, validate=validate.Length(min=10))
+**Решение:**
 
-class ItemSchema(Schema): product_id = fields.Integer(required=True) quantity = fields.Integer(required=True, validate=validate.Range(min=1, max=100))
+```python
+from marshmallow import Schema, fields, validate, ValidationError
 
-Во view (Flask)
-@app.route('/orders', methods=['POST']) def create_order(): schema = OrderSchema() try: # Парсим и валидируем JSON одной строкой validated_data = schema.load(request.json) except ValidationError as err: return {"errors": err.messages}, 400
+# Схема, описывающая ожидаемый запрос
+class OrderSchema(Schema):
+    user_id = fields.Integer(required=True, validate=validate.Range(min=1))
+    items = fields.List(fields.Nested(lambda: ItemSchema()), required=True)
+    promo_code = fields.Str(allow_none=True, validate=validate.Length(min=3, max=10))
+    address = fields.Str(required=True, validate=validate.Length(min=10))
 
-# Внутрь бизнес-логики попадают только ЧИСТЫЕ данные
-create_order_in_db(validated_data)
-return {"status": "ok"}, 201
-Результат: Контракт входящих данных описан явно. Ошибки валидации клиента возвращаются мгновенно, не нагружая базу данных и бизнес-логику.
+class ItemSchema(Schema):
+    product_id = fields.Integer(required=True)
+    quantity = fields.Integer(required=True, validate=validate.Range(min=1, max=100))
 
-Пример 2: Сериализация (фильтрация) исходящих данных (Защита данных) Задача: Вернуть клиенту информацию о пользователе, но скрыть конфиденциальные поля (хэш пароля, токены, is_admin флаг) и преобразовать внутренние типы (даты, UUID) в строки. Решение:
+# Во view (Flask)
+@app.route('/orders', methods=['POST'])
+def create_order():
+    schema = OrderSchema()
+    try:
+        # Парсим и валидируем JSON одной строкой
+        validated_data = schema.load(request.json)
+    except ValidationError as err:
+        return {"errors": err.messages}, 400
+    
+    # Внутрь бизнес-логики попадают только ЧИСТЫЕ данные
+    create_order_in_db(validated_data)
+    return {"status": "ok"}, 201
+```
 
-python import uuid from marshmallow import Schema, fields
+**Результат:** Контракт входящих данных описан явно. Ошибки валидации клиента возвращаются мгновенно, не нагружая базу данных и бизнес-логику.
 
-class UserSchema(Schema): # Поля, которые МОЖНО отдавать наружу public_id = fields.UUID() # Автоматически конвертирует UUID в строку username = fields.Str() created_at = fields.DateTime(format='iso') # datetime -> ISO8601 строка is_active = fields.Bool()
+---
 
-class Meta:
-    # Поля, которые НЕ попадут в ответ, даже если они есть в объекте
-    exclude = ("_password_hash", "secret_token", "is_superuser")
-Внутри метода API
-def get_user(user_id): user = db.session.get(User, user_id) # Это объект SQLAlchemy schema = UserSchema() # dump() создает безопасный словарь для JSON ответа return schema.dump(user) Результат: Никогда не вернете пароль клиенту. Данные автоматически приводятся к формату JSON (даты, UUID). Схема служит маской для исходящих данных.
+### Пример 2: Сериализация (фильтрация) исходящих данных (Защита данных)
 
-Пример 3: Частичное обновление (PATCH) и вложенные структуры Задача: Обновить профиль пользователя, отправив только изменившееся поле (PATCH-запрос). Внутри профиля есть сложный вложенный объект (например, settings). Решение:
+**Задача:** Вернуть клиенту информацию о пользователе, но скрыть конфиденциальные поля (хэш пароля, токены, is_admin флаг) и преобразовать внутренние типы (даты, UUID) в строки.
 
-python from marshmallow import Schema, fields, pre_load, post_dump
+**Решение:**
 
-class SettingsSchema(Schema): theme = fields.Str(validate=validate.OneOf(["light", "dark"])) language = fields.Str(validate=validate.OneOf(["en", "ru", "es"]))
+```python
+import uuid
+from marshmallow import Schema, fields
 
-class UserUpdateSchema(Schema): username = fields.Str(allow_none=False) # Нельзя сбросить в None email = fields.Email() settings = fields.Nested(SettingsSchema) # Вложенная валидация!
+class UserSchema(Schema):
+    # Поля, которые МОЖНО отдавать наружу
+    public_id = fields.UUID()  # Автоматически конвертирует UUID в строку
+    username = fields.Str()
+    created_at = fields.DateTime(format='iso')  # datetime -> ISO8601 строка
+    is_active = fields.Bool()
+    
+    class Meta:
+        # Поля, которые НЕ попадут в ответ, даже если они есть в объекте
+        exclude = ("_password_hash", "secret_token", "is_superuser")
 
-class Meta:
-    # Говорим, что все поля опциональны (для PATCH)
-    partial = True
-PATCH /users/123
-data = request.json # {"settings": {"theme": "dark"}} schema = UserUpdateSchema(partial=True) # Разрешаем частичное обновление result = schema.load(data) # Валидация проходит успешно (username не пришел, но мы его не ждем)
+# Внутри метода API
+def get_user(user_id):
+    user = db.session.get(User, user_id)  # Это объект SQLAlchemy
+    schema = UserSchema()
+    # dump() создает безопасный словарь для JSON ответа
+    return schema.dump(user)
+```
 
-Обновляем только то, что пришло
-user = find_user(123) if 'settings' in result: # Marshmallow уже проверил, что theme может быть только 'dark' user.update_settings(result['settings']) Результат: Библиотека позволяет гибко обрабатывать частичные обновления и рекурсивно валидировать сложные JSON-документы, сохраняя код чистым и предсказуемым.
+**Результат:** Никогда не вернете пароль клиенту. Данные автоматически приводятся к формату JSON (даты, UUID). Схема служит маской для исходящих данных.
+
+---
+
+### Пример 3: Частичное обновление (PATCH) и вложенные структуры
+
+**Задача:** Обновить профиль пользователя, отправив только изменившееся поле (PATCH-запрос). Внутри профиля есть сложный вложенный объект (например, settings).
+
+**Решение:**
+
+```python
+from marshmallow import Schema, fields, pre_load, post_dump
+
+class SettingsSchema(Schema):
+    theme = fields.Str(validate=validate.OneOf(["light", "dark"]))
+    language = fields.Str(validate=validate.OneOf(["en", "ru", "es"]))
+
+class UserUpdateSchema(Schema):
+    username = fields.Str(allow_none=False)  # Нельзя сбросить в None
+    email = fields.Email()
+    settings = fields.Nested(SettingsSchema)  # Вложенная валидация!
+    
+    class Meta:
+        # Говорим, что все поля опциональны (для PATCH)
+        partial = True
+
+# PATCH /users/123
+data = request.json  # {"settings": {"theme": "dark"}}
+schema = UserUpdateSchema(partial=True)  # Разрешаем частичное обновление
+result = schema.load(data)  # Валидация проходит успешно (username не пришел, но мы его не ждем)
+
+# Обновляем только то, что пришло
+user = find_user(123)
+if 'settings' in result:
+    # Marshmallow уже проверил, что theme может быть только 'dark'
+    user.update_settings(result['settings'])
+```
+
+**Результат:** Библиотека позволяет гибко обрабатывать частичные обновления и рекурсивно валидировать сложные JSON-документы, сохраняя код чистым и предсказуемым.
 ---
 # Модуль 2. Основные идеи и механизмы
 ## 1. Центральные объекты и архитектуры
@@ -346,5 +407,6 @@ except ValidationError as err:
 Диспетчеризация через хуки пред- и пост-обработки особенно полезна при работе с разнородными структурами данных. Вместо того чтобы писать сложные условия для обработки различных форматов данных, можно создать отдельные методы, помеченные @pre_load или @post_load, которые будут выполняться на соответствующих этапах конвейера. Например, можно определить разную предобработку для данных, пришедших из CSV-файла и из JSON-API, используя информацию из контекста.
 
 При работе с деревьями и другими рекурсивными структурами данных особенно эффективно комбинирование нескольких механизмов Marshmallow. Например, схема для дерева категорий может использовать fields.Nested с параметром many=True для описания дочерних узлов, применять кастомные валидаторы через @validates_schema для проверки целостности дерева, использовать контекст для передачи ограничений глубины вложенности, а через пост-обработку преобразовывать плоский список в иерархическую структуру. Это позволяет создавать мощные, но при этом понятные и поддерживаемые системы валидации и преобразования сложных структур данных.
+
 
 
